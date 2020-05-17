@@ -1,18 +1,40 @@
-﻿<!DOCTYPE html>
+﻿@{
+    var progress = ViewBag.DocumentCount == null ? 0 : (double)ViewBag.DocumentCount / ((long)56000 * 44000) * 100;
+    var millionDocs = ViewBag.DocumentCount == null ? 0 : (double)ViewBag.DocumentCount/1000000;
+}
+<!DOCTYPE html>
 <html>
 <head>
     <meta name="viewport" content="width=device-width" />
-    <title>@ViewBag.Title @ViewBag.Collection - Resin Extensible Search Engine</title>
+    <title>@ViewBag.Title</title>
     <meta charset="UTF-8">
     <link rel="stylesheet" type="text/css" href="/css/theme.css">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="manifest" href="/site.webmanifest">
 </head>
 <body>
-    <div>
+    <div class="outer-container">
+        <div class="logo2"><a href="/?collection=cc_wat,cc_wet" title="Crawl Crawler version: 0.0.1-b">Crawl Crawler <sup>BETA</sup></a></div>
         @RenderBody()
     </div>
     <footer>
         <div>
-            <p>Non-tracking search (powered by <a href="https://github.com/kreeben/resin" title="Resin v0.33">Resin</a>).</p>
+            <p class="footer-hero">
+                You are using non-tracking web search
+                powered by open source <a href="https://github.com/didyougogo/commoncrawlcrawler/">software</a>
+                and data from WWW and <a href="https://commoncrawl.org">Common Crawl</a>.
+                These <a href="/toc">terms</a> apply. 
+                Crawl Crawler is not affiliated with Common Crawl.
+            </p>
+            <p>
+                Coverage (WAT): @progress.ToString("0.##")% (@millionDocs.ToString("0.##")M documents). 
+                <a href="/donate">Donate</a> to increase capacity. 
+            </p>
+        </div>
+        <div class="footer-nav">
+            <p><a href="/about">About</a> | <a href="/faq">FAQ</a> | <a href="/toc">Terms</a> | <a href="/contact">Contact</a> | <a href="https://github.com/didyougogo/commoncrawlcrawler/issues">Report issue</a></p>
         </div>
     </footer>
 </body>

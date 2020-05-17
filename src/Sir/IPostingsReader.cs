@@ -5,7 +5,6 @@ namespace Sir
 {
     public interface IPostingsReader : IDisposable
     {
-        void Reduce(Query mappedQuery, IDictionary<(ulong, long), double> result);
-        IDictionary<(ulong, long), double> ReadWithScore(ulong collectionId, IList<long> offsets, double score);
+        void Reduce(IQuery query, int numOfTerms, ref IDictionary<(ulong, long), double> result);
     }
 }

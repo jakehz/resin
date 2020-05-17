@@ -6,77 +6,121 @@ namespace Sir.Search
     {
         protected abstract IList<(ulong, long)> Read(ulong collectionId, IList<long> postingsOffsets);
 
-        public void Reduce(Query mappedQuery, IDictionary<(ulong, long), double> result)
+        public void Reduce(IQuery query, int numOfTerms, ref IDictionary<(ulong, long), double> result)
         {
-            foreach (var term in mappedQuery.Terms)
+            IDictionary<(ulong, long), double> queryResult = new Dictionary<(ulong, long), double>();
+
+            Reduce(query.Terms, numOfTerms, ref queryResult);
+
+            if (query.IsIntersection)
             {
-                var termResult = Read(term.CollectionId, term.PostingsOffsets);
-
-                if (term.IsIntersection)
+                if (result.Count == 0)
                 {
-                    if (result.Count == 0)
+                    foreach (var docId in queryResult)
                     {
-                        foreach (var docId in termResult)
-                        {
-                            result.Add(docId, term.Score);
-                        }
-
-                        continue;
-                    }
-
-                    var scored = new HashSet<(ulong, long)>();
-
-                    foreach (var docId in termResult)
-                    {
-                        double score;
-
-                        if (result.TryGetValue(docId, out score))
-                        {
-                            result[docId] = score + term.Score;
-
-                            scored.Add(docId);
-                        }
-                    }
-
-                    var bad = new HashSet<(ulong, long)>();
-
-                    foreach (var doc in result)
-                    {
-                        if (!scored.Contains(doc.Key))
-                        {
-                            bad.Add(doc.Key);
-                        }
-                    }
-
-                    foreach (var docId in bad)
-                    {
-                        result.Remove(docId);
+                        result.Add(docId.Key, docId.Value);
                     }
                 }
-                else if (term.IsUnion)
+                else
                 {
+                    var intersection = new Dictionary<(ulong, long), double>();
 
-                    if (result.Count == 0)
-                    {
-                        foreach (var docId in termResult)
-                        {
-                            result.Add(docId, term.Score);
-                        }
-
-                        continue;
-                    }
-
-                    foreach (var docId in termResult)
+                    foreach (var doc in queryResult)
                     {
                         double score;
 
-                        if (result.TryGetValue(docId, out score))
+                        if (result.TryGetValue(doc.Key, out score))
                         {
-                            result[docId] = score + term.Score;
+                            intersection.Add(doc.Key, score + (doc.Value));
+                        }
+                    }
+
+                    result = intersection;
+                }
+            }
+            else if (query.IsUnion)
+            {
+                if (result.Count == 0)
+                {
+                    foreach (var docId in queryResult)
+                    {
+                        result.Add(docId.Key, docId.Value);
+                    }
+                }
+                else
+                {
+                    foreach (var docId in queryResult)
+                    {
+                        double score;
+
+                        if (result.TryGetValue(docId.Key, out score))
+                        {
+                            result[docId.Key] = score + docId.Value;
                         }
                         else
                         {
-                            result.Add(docId, term.Score);
+                            result.Add(docId.Key, docId.Value);
+                        }
+                    }
+                }
+            }
+            else // Not
+            {
+                if (result.Count > 0)
+                {
+                    foreach (var docId in queryResult)
+                    {
+                        result.Remove(docId.Key);
+                    }
+                }
+            }
+
+            if (query.And != null)
+            {
+                Reduce(query.And, numOfTerms, ref result);
+            }
+            if (query.Or != null)
+            {
+                Reduce(query.Or, numOfTerms, ref result);
+            }
+            if (query.Not != null)
+            {
+                Reduce(query.Not, numOfTerms, ref result);
+            }
+        }
+
+        private void Reduce(IList<Term> terms, int numOfTerms, ref IDictionary<(ulong Key, long Value), double> result)
+        {
+            foreach (var term in terms)
+            {
+                if (term.PostingsOffsets == null)
+                    continue;
+
+                var termResult = Read(term.CollectionId, term.PostingsOffsets);
+
+                if (term.IsIntersection || term.IsUnion)
+                {
+                    if (result.Count == 0)
+                    {
+                        foreach (var docId in termResult)
+                        {
+                            result.Add(docId, term.Score / numOfTerms);
+                        }
+                    }
+                    else
+                    {
+                        foreach (var docId in termResult)
+                        {
+                            double score;
+
+                            if (result.TryGetValue(docId, out score))
+                            {
+                                result[docId] = score + (term.Score/numOfTerms);
+                            }
+                            else
+                            {
+                                result.Add(docId, (term.Score / numOfTerms));
+                            }
                         }
                     }
                 }
@@ -92,19 +136,6 @@ namespace Sir.Search
                         result.Remove(docId);
                     }
                 }
-            }
-
-            if (mappedQuery.And != null)
-            {
-                Reduce(mappedQuery.And, result);
-            }
-            if (mappedQuery.Or != null)
-            {
-                Reduce(mappedQuery.Or, result);
-            }
-            if (mappedQuery.Not != null)
-            {
-                Reduce(mappedQuery.Not, result);
             }
         }
     }

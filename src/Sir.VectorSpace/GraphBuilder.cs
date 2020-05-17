@@ -10,7 +10,7 @@ namespace Sir.VectorSpace
         public static bool TryMerge(
             VectorNode root, 
             VectorNode node,
-            IEuclidDistance model,
+            IDistanceCalculator model,
             double foldAngle,
             double identicalAngle,
             out VectorNode parent)
@@ -58,7 +58,7 @@ namespace Sir.VectorSpace
         public static long GetOrIncrementId(
             VectorNode root, 
             VectorNode node,
-            IEuclidDistance model, 
+            IDistanceCalculator model, 
             double foldAngle, 
             double identicalAngle,
             Func<long> identity)
@@ -105,7 +105,7 @@ namespace Sir.VectorSpace
         public static bool MergeOrAdd(
             VectorNode root, 
             VectorNode node,
-            IEuclidDistance model, 
+            IDistanceCalculator model, 
             double foldAngle, 
             double identicalAngle)
         {
@@ -117,7 +117,53 @@ namespace Sir.VectorSpace
 
                 if (angle >= identicalAngle)
                 {
-                    lock (cursor)
+                    AddDocId(cursor, node);
+
+                    return true;
+                }
+                else if (angle > foldAngle)
+                {
+                    if (cursor.Left == null)
+                    {
+                        cursor.Left = node;
+                        return false;
+                    }
+                    else
+                    {
+                        cursor = cursor.Left;
+                    }
+                }
+                else
+                {
+                    if (cursor.Right == null)
+                    {
+                        cursor.Right = node;
+                        return false;
+                    }
+                    else
+                    {
+                        cursor = cursor.Right;
+                    }
+                }
+            }
+        }
+
+        public static bool MergeOrAddConcurrent(
+            VectorNode root,
+            VectorNode node,
+            IDistanceCalculator model,
+            double foldAngle,
+            double identicalAngle)
+        {
+            var cursor = root;
+
+            while (true)
+            {
+                var angle = cursor.Vector == null ? 0 : model.CosAngle(node.Vector, cursor.Vector);
+
+                if (angle >= identicalAngle)
+                {
+                    lock (cursor.Sync)
                     {
                         AddDocId(cursor, node);
                     }
@@ -128,7 +174,7 @@ namespace Sir.VectorSpace
                 {
                     if (cursor.Left == null)
                     {
-                        lock (root)
+                        lock (cursor.Sync)
                         {
                             if (cursor.Left == null)
                             {
@@ -150,7 +196,7 @@ namespace Sir.VectorSpace
                 {
                     if (cursor.Right == null)
                     {
-                        lock (root)
+                        lock (cursor.Sync)
                         {
                             if (cursor.Right == null)
                             {
@@ -286,7 +332,7 @@ namespace Sir.VectorSpace
             stream.Write(MemoryMarshal.Cast<long, byte>(payload));
         }
 
-        public static VectorNode DeserializeNode(byte[] nodeBuffer, Stream vectorStream, IEuclidSpace model)
+        public static VectorNode DeserializeNode(byte[] nodeBuffer, Stream vectorStream, IModel model)
         {
             // Deserialize node
             var vecOffset = BitConverter.ToInt64(nodeBuffer, 0);
@@ -305,7 +351,7 @@ namespace Sir.VectorSpace
             long weight,
             long terminator,
             Stream vectorStream,
-            IEuclidSpace model)
+            IVectorSpaceConfig model)
         {
             var vector = VectorOperations.DeserializeVector(vecOffset, (int)componentCount, model.VectorWidth, vectorStream);
             var node = new VectorNode(postingsOffset, vecOffset, terminator, weight, vector);
@@ -319,7 +365,7 @@ namespace Sir.VectorSpace
             VectorNode root,
             float identicalAngle, 
             float foldAngle,
-            IEuclidSpace model)
+            IModel model)
         {
             var buf = new byte[VectorNode.BlockSize];
             int read = indexStream.Read(buf);
@@ -344,7 +390,7 @@ namespace Sir.VectorSpace
             long indexLength,
             VectorNode root,
             (float identicalAngle, float foldAngle) similarity,
-            IEuclidSpace model)
+            IModel model)
         {
             int read = 0;
             var buf = new byte[VectorNode.BlockSize];
@@ -366,7 +412,7 @@ namespace Sir.VectorSpace
         }
 
         public static VectorNode DeserializeTree(
-            Stream indexStream, Stream vectorStream, long indexLength, IEuclidSpace model)
+            Stream indexStream, Stream vectorStream, long indexLength, IModel model)
         {
             VectorNode root = new VectorNode();
             VectorNode cursor = root;

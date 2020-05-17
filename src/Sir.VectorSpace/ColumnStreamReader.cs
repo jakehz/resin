@@ -1,5 +1,7 @@
-﻿using System;
+﻿using Microsoft.Extensions.Logging;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 
 namespace Sir.VectorSpace
@@ -7,44 +9,47 @@ namespace Sir.VectorSpace
     /// <summary>
     /// Index bitmap reader. Each block is a <see cref="Sir.Search.VectorNode"/>.
     /// </summary>
-    public class NodeReader : INodeReader
+    public class ColumnStreamReader : IColumnReader
     {
         private readonly ISessionFactory _sessionFactory;
+        private readonly ILogger _logger;
+        private readonly ulong _collectionId;
         private readonly Stream _vectorFile;
         private readonly Stream _ixFile;
-        private readonly ulong _collectionId;
+        private readonly IList<(long offset, long length)> _pages;
 
-        public long KeyId { get; }
-
-        public NodeReader(
+        public ColumnStreamReader(
             ulong collectionId,
             long keyId,
             ISessionFactory sessionFactory,
-            Stream vectorFile,
-            Stream ixFile)
+            ILogger logger)
         {
-            KeyId = keyId;
             _collectionId = collectionId;
             _sessionFactory = sessionFactory;
-            _vectorFile = vectorFile;
-            _ixFile = ixFile;
+            _logger = logger;
+
+            var vectorFileName = Path.Combine(_sessionFactory.Dir, $"{_collectionId}.vec");
+            var ixFileName = Path.Combine(_sessionFactory.Dir, string.Format("{0}.{1}.ix", _collectionId, keyId));
+
+            _vectorFile = _sessionFactory.CreateReadStream(vectorFileName);
+            _ixFile = _sessionFactory.CreateReadStream(ixFileName);
+            _pages = GetAllPages(Path.Combine(_sessionFactory.Dir, $"{_collectionId}.{keyId}.ixtp"));
         }
 
-        public Hit ClosestTerm(IVector vector, IStringModel model)
+        public Hit ClosestMatch(IVector vector, IStringModel model)
         {
-            var pages = GetAllPages(
-                Path.Combine(_sessionFactory.Dir, $"{_collectionId}.{KeyId}.ixtp"));
-
+            var time = Stopwatch.StartNew();
             var hits = new List<Hit>();
 
-            //Parallel.ForEach(pages, page =>
-            foreach (var page in pages)
+            foreach (var page in _pages)
             {
-                var hit = ClosestTermInPage(vector, model, page.offset);
+                var hit = ClosestMatchInPage(vector, model, page.offset);
 
                 if (hit != null)
                     hits.Add(hit);
-            }//);
+            }
+
+            _logger.LogInformation($"scanning all pages took {time.Elapsed}");
 
             Hit best = null;
 
@@ -54,7 +59,7 @@ namespace Sir.VectorSpace
                 {
                     best = hit;
                 }
-                else if (hit.Score >= model.IdenticalAngle)
+                else if (hit.Score.Approximates(best.Score))
                 {
                     GraphBuilder.MergePostings(best.Node, hit.Node);
                 }
@@ -63,28 +68,20 @@ namespace Sir.VectorSpace
             return best;
         }
 
-        public IList<(long offset, long length)> GetAllPages(string pageFileName)
-        {
-            using (var ixpStream = _sessionFactory.CreateReadStream(pageFileName))
-            {
-                return new PageIndexReader(ixpStream).GetAll();
-            }
-        }
-
-        private Hit ClosestTermInPage(
-            IVector vector, IStringModel model, long pageOffset)
+        private Hit ClosestMatchInPage(
+        IVector vector, IStringModel model, long pageOffset)
         {
             _ixFile.Seek(pageOffset, SeekOrigin.Begin);
 
-            var hit0 = ClosestMatchInSegment(
+            var hit = ClosestMatchInSegment(
                     vector,
                     _ixFile,
                     _vectorFile,
                     model);
 
-            if (hit0.Score > 0)
+            if (hit.Score > 0)
             {
-                return hit0;
+                return hit;
             }
 
             return null;
@@ -94,7 +91,7 @@ namespace Sir.VectorSpace
             IVector queryVector,
             Stream indexFile,
             Stream vectorFile,
-            IEuclidSpace model)
+            IModel model)
         {
             Span<byte> block = stackalloc byte[VectorNode.BlockSize];
             var best = new Hit();
@@ -201,9 +198,18 @@ namespace Sir.VectorSpace
             }
         }
 
+        private IList<(long offset, long length)> GetAllPages(string pageFileName)
+        {
+            using (var ixpStream = _sessionFactory.CreateReadStream(pageFileName))
+            {
+                return new PageIndexReader(ixpStream).GetAll();
+            }
+        }
+
         public void Dispose()
         {
             _vectorFile.Dispose();
+            _ixFile.Dispose();
         }
     }
 }

@@ -1,25 +1,72 @@
 ﻿@{
-    var col = Context.Request.Query["collection"].ToString();
     var query = Context.Request.Query["q"].ToString();
-    var knownFields = Context.Request.Query["field"].ToArray();
-    var titleSelected = knownFields.Contains("title");
-    var bodySelected = knownFields.Contains("body");
+    var fieldArray = Context.Request.Query.ContainsKey("field")
+        ? Context.Request.Query["field"].ToArray()
+                    .SelectMany(x => x.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                    .ToArray()
+        : (string[])ViewBag.DefaultFields;
+    var fields = new HashSet<string>(fieldArray);
+    var titleSelected = fields.Contains("title");
+    var descriptionSelected = fields.Contains("description");
+    var schemeSelected = fields.Contains("scheme");
+    var hostSelected = fields.Contains("host");
+    var pathSelected = fields.Contains("path");
+    var querySelected = fields.Contains("query");
+    var urlSelected = fields.Contains("url");
+    var reservedCollections = new HashSet<string> { "cc_wat", "cc_wet" };
+    var collections = Context.Request.Query["collection"].ToArray().SelectMany(s => s.Split(',', StringSplitOptions.RemoveEmptyEntries)).ToArray();
+
+    if (collections.Length == 0)
+    {
+        collections = reservedCollections.ToArray();
+    }
+
+    var customCollections = collections.Where(x => reservedCollections.Contains(x) == false).ToList();
 }
+
 @using (Html.BeginRouteForm("default", new { controller = "Search" }, FormMethod.Get))
 {
-    <p>
-        <input type="text" id="collection" name="collection" class="collection" value="@ViewBag.Collection" title="Enter the names of one or more collections here, separated by commas." />
-    </p>
     <fieldset class="search-fields">
-        <legend>Search fields</legend>
-        <input type="checkbox" name="field" value="title" id="title" @(titleSelected ? "checked" : "") /><label for="title">title</label>
-        <input type="checkbox" name="field" value="body" id="body" @(bodySelected ? "checked" : "") /><label for="body">body</label>
+        <legend>
+            <span>
+                Search <a href="@ViewBag.CCTargetUrl">Common Crawl's</a>
+                <label><input type="checkbox" name="collection" id="collection" value="cc_wat" @(collections.Contains("cc_wat") ? "checked" : "") />WAT meta-data</label>,
+                <label><input type="checkbox" name="collection" id="collection" value="cc_wet" @(collections.Contains("cc_wet") ? "checked" : "") />WET text extracts and WWW</label>.
+            </span>
+            @if (customCollections.Count > 0)
+            {
+                <span>Also, </span>
+                <span>
+                    @foreach (var collection in customCollections)
+                    {
+                        <label><input type="checkbox" name="collection" id="collection" value="@collection" checked />@collection</label>
+                    }
+                </span>
+            }
+
+        </legend>
+
+        <label><input type="checkbox" name="field" id="title" value="title" @(titleSelected ? "checked" : "") />title</label>
+        <label><input type="checkbox" name="field" id="description" value="description" @(descriptionSelected ? "checked" : "") />description</label>
+        <label><input type="checkbox" name="field" id="scheme" value="scheme" @(schemeSelected ? "checked" : "") />scheme</label>
+        <label><input type="checkbox" name="field" id="host" value="host" @(hostSelected ? "checked" : "") />host</label>
+        <label><input type="checkbox" name="field" id="path" value="path" @(pathSelected ? "checked" : "") />path</label>
+        <label><input type="checkbox" name="field" id="query" value="query" @(querySelected ? "checked" : "") />query</label>
+        <label><input type="checkbox" name="field" id="url" value="url" @(urlSelected ? "checked" : "") />url</label>
     </fieldset>
-    <input type="text" id="q" name="q" class="q" placeholder="Ask me anything." value="@query" />
-    <div class="buttons">
-        <button type="submit" value="OR" name="OR" id="or" title="OR">Go <sup>OR</sup></button><button type="submit" value="AND" name="AND" id="and" title="AND">Go <sup>AND</sup></button>
+    <div class="input-wrapper">
+        <div class="q">
+            <input type="text" id="q" name="q" class="q" placeholder="Keywords or phrase" value="@query" />
+        </div>
+        <div class="buttons">
+            <button type="submit" value="OR" name="OR" id="or" title="OR">Go <sup>OR</sup></button><button type="submit" value="AND" name="AND" id="and" title="AND">Go <sup>AND</sup></button>
+        </div>
     </div>
     <div style="clear:both;"></div>
     <input type="hidden" value="0" name="skip" id="skip" />
     <input type="hidden" value="100" name="take" id="take" />
+    <input type="hidden" value="title" name="select" id="select" />
+    <input type="hidden" value="description" name="select" id="select" />
+    <input type="hidden" value="url" name="select" id="select" />
+    <input type="hidden" value="filename" name="select" id="select" />
 }

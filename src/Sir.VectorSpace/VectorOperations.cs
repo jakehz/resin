@@ -11,6 +11,20 @@ namespace Sir.VectorSpace
     /// </summary>
     public static class VectorOperations
     {
+        public static void AddOrAppendToComponent(this SortedList<int, float> vec, int key)
+        {
+            float v;
+
+            if (vec.TryGetValue(key, out v))
+            {
+                vec[key] = v + 1;
+            }
+            else
+            {
+                vec.Add(key, 1);
+            }
+        }
+
         public static IVector DeserializeVector(
             long vectorOffset, int componentCount, int vectorWidth, MemoryMappedViewAccessor vectorView)
         {
@@ -32,7 +46,7 @@ namespace Sir.VectorSpace
             if (read < componentCount)
                 throw new Exception("bad");
 
-            return new IndexedVector(index, values, vectorWidth);
+            return new IndexedVector(index, values, vectorWidth, (Memory<char>)null);
         }
 
         public static IVector DeserializeVector(long vectorOffset, int componentCount, int vectorWidth, Stream vectorStream)
@@ -145,14 +159,6 @@ namespace Sir.VectorSpace
             }
 
             return result;
-        }
-
-        public static void AddOrAppendToComponent(this SortedList<int, float> vec, int key, float value)
-        {
-            if (vec.ContainsKey(key))
-                vec[key] += value;
-            else
-                vec.Add(key, value);
         }
         
         public static bool ContainsMany(this string text, char c)

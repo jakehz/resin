@@ -1,8 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -37,7 +37,7 @@ namespace Sir.Search
         {
         }
 
-        public ResponseModel Read(HttpRequest request, IStringModel model)
+        public async Task<ResponseModel> Read(HttpRequest request, IStringModel model)
         {
             var timer = Stopwatch.StartNew();
             var take = 100;
@@ -49,7 +49,7 @@ namespace Sir.Search
             if (request.Query.ContainsKey("skip"))
                 skip = int.Parse(request.Query["skip"]);
 
-            var query = _httpQueryParser.ParseRequest(request);
+            IQuery query = await _httpQueryParser.ParseRequest(request);
 
             if (query == null)
             {
@@ -57,59 +57,29 @@ namespace Sir.Search
             }
 
 #if DEBUG
-
             var debug = new Dictionary<string, object>();
 
             _httpQueryParser.ParseQuery(query, debug);
 
             _logger.LogInformation(JsonConvert.SerializeObject(debug));
-            _logger.LogInformation($"divider {query.GetDivider()}");
-
 #endif
-            ReadResult result = null;
 
             using (var readSession = _sessionFactory.CreateReadSession())
             {
-                if (request.Query.ContainsKey("id") && request.Query.ContainsKey("collection"))
-                {
-                    var collectionId = request.Query["collection"].ToString().ToHash();
-                    var ids = request.Query["id"].ToDictionary(s => (collectionId, long.Parse(s)), x => (double)1);
-                    var docs = readSession.ReadDocs(ids, query);
+                var result = readSession.Read(query, skip, take);
 
-                    result = new ReadResult { Query = query, Docs = docs, Total = docs.Count };
+                using (var mem = new MemoryStream())
+                {
+                    Serialize(result.Docs, mem);
+
+                    return new ResponseModel
+                    {
+                        MediaType = "application/json",
+                        Documents = result.Docs,
+                        Total = result.Total,
+                        Body = mem.ToArray()
+                    };
                 }
-                else
-                {
-                    result = readSession.Read(query, skip, take);
-                }
-            }
-
-            string newCollectionName = null;
-
-            if (request.Query.ContainsKey("target"))
-            {
-                newCollectionName = request.Query["target"].ToString();
-
-                if (string.IsNullOrWhiteSpace(newCollectionName))
-                {
-                    newCollectionName = Guid.NewGuid().ToString();
-                }
-
-                _sessionFactory.WriteConcurrent(new Job(newCollectionName.ToHash(), result.Docs, model));
-            }
-
-            using (var mem = new MemoryStream())
-            {
-                Serialize(result.Docs, mem);
-
-                return new ResponseModel
-                {
-                    MediaType = "application/json",
-                    Documents = result.Docs,
-                    Total = result.Total,
-                    Body = mem.ToArray(),
-                    Target = newCollectionName
-                };
             }
         }
 

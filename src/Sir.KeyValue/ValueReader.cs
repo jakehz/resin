@@ -27,7 +27,7 @@ namespace Sir.KeyValue
             Span<byte> buf = stackalloc byte[len];
 
             _stream.Seek(offset, SeekOrigin.Begin);
-            
+
             read = _stream.Read(buf);
 
             if (read != len)
@@ -60,6 +60,10 @@ namespace Sir.KeyValue
             else if (DataType.LONG == typeId)
             {
                 return BitConverter.ToInt64(buf);
+            }
+            else if (DataType.ULONG == typeId)
+            {
+                return BitConverter.ToUInt64(buf);
             }
             else if (DataType.DATETIME == typeId)
             {

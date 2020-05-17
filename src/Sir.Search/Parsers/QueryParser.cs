@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
+using System.Collections.Generic;
 
 namespace Sir.Search
 {
@@ -6,19 +8,27 @@ namespace Sir.Search
     {
         private readonly SessionFactory _sessionFactory;
         private readonly IStringModel _model;
+        private readonly ILogger<QueryParser> _log;
 
         public QueryParser(SessionFactory sessionFactory, IStringModel model)
         {
             _sessionFactory = sessionFactory;
             _model = model;
+            _log = _sessionFactory.GetLogger<QueryParser>();
         }
 
-        public Query Parse(string[] collections, string q, string[] fields, bool and, bool or)
+        public IQuery Parse(
+            string[] collections,
+            string q, 
+            string[] fields, 
+            IEnumerable<string> select, 
+            bool and, 
+            bool or)
         {
             var root = new Dictionary<string, object>();
             var cursor = root;
 
-            foreach(var collection in collections)
+            foreach (var collection in collections)
             {
                 var query = new Dictionary<string, object>
                 {
@@ -76,23 +86,36 @@ namespace Sir.Search
                 cursor = query;
             }
 
-            return ParseQuery(root);
+            _log.LogDebug(JsonConvert.SerializeObject(root));
+
+            return Parse(root, select);
         }
 
-        public Query ParseQuery(IDictionary<string, object> document)
+        public IQuery Parse(dynamic document, IEnumerable<string> select)
+        {
+            //if (((IDictionary<string,object>)document).ContainsKey("join"))
+            //{
+            //    return ParseJoin(document);
+            //}
+
+            return ParseQuery(document, select);
+        }
+
+        public Query ParseQuery(dynamic document, IEnumerable<string> select)
         {
             Query root = null;
             Query cursor = null;
             string[] parentCollections = null;
-            string op = null;
+            bool and = false;
+            bool or = false;
+            bool not = false;
             var operation = document;
 
             while (operation != null)
             {
                 string[] collections = null;
-                string key = null;
-                string value = null;
-                object next = null;
+                var kvps = new List<(string key, string value)>();
+                dynamic next = null;
 
                 foreach (var kvp in operation)
                 {
@@ -101,77 +124,88 @@ namespace Sir.Search
                         collections = ((string)kvp.Value)
                             .Split(',', System.StringSplitOptions.RemoveEmptyEntries);
 
-                        if (parentCollections == null)
-                            parentCollections = collections;
+                        parentCollections = collections;
+
                     }
                     else if (kvp.Key == "and")
                     {
-                        op = "and";
+                        and = true;
                         next = kvp.Value;
                     }
                     else if (kvp.Key == "or")
                     {
-                        op = "or";
+                        or = true;
                         next = kvp.Value;
                     }
                     else if (kvp.Key == "not")
                     {
-                        op = "not";
+                        not = true;
                         next = kvp.Value;
                     }
                     else
                     {
-                        key = kvp.Key;
-                        value = (string)kvp.Value;
+                        var keys = ((string)kvp.Key).Split(',', System.StringSplitOptions.RemoveEmptyEntries);
+
+                        foreach (var k in keys)
+                            kvps.Add((k, kvp.Value));
                     }
                 }
 
-                operation = next as IDictionary<string, object>;
+                operation = next;
 
-                if (key == null)
+                if (kvps.Count == 0)
+                {
                     continue;
-
-                Query r = null;
-                Query c = null;
-                bool and = op == "and";
-                bool or = op == "or";
-                bool not = op == "not";
-
-                foreach (var collection in collections)
-                {
-                    var q = new Query(ParseTerms(collection, key, value, and, or, not), and, or, not);
-
-                    if (r == null)
-                    {
-                        r = c = q;
-                    }
-                    else
-                    {
-                        c.Or = q;
-
-                        c = q;
-                    }
-                }
-
-                if (root == null)
-                {
-                    root = cursor = r;
                 }
                 else
                 {
-                    if (and)
-                        cursor.And = r;
-                    else if (or)
-                        cursor.Or = r;
-                    else
-                        cursor.Not = r;
+                    foreach (var collection in collections ?? parentCollections)
+                    {
+                        foreach (var kvp in kvps)
+                        {
+                            var terms = ParseTerms(collection, kvp.key, kvp.value, and, or, not);
 
-                    cursor = r;
+                            if (terms.Count == 0)
+                            {
+                                continue;
+                            }
+
+                            var query = new Query(terms, select, and, or, not);
+
+                            if (root == null)
+                            {
+                                root = cursor = query;
+                            }
+                            else
+                            {
+                                cursor.Or = query;
+
+                                cursor = query;
+                            }
+                        }
+                    }
                 }
             }
 
+            _log.LogDebug(JsonConvert.SerializeObject(root));
+
             return root;
         }
+
+        //public Join ParseJoin(dynamic document)
+        //{
+        //    string[] joinInfo = ((string)((IDictionary<string,object>)document)["join"])
+        //        .Split(',', System.StringSplitOptions.RemoveEmptyEntries);
+
+        //    string joinCollection = joinInfo[0];
+        //    string primaryKey = joinInfo[1];
+        //    var query = ParseQuery(document.query);
+        //    var root = new Join(query, joinCollection, primaryKey);
+
+        //    _log.LogDebug(JsonConvert.SerializeObject(root));
+
+        //    return root;
+        //}
 
         public IList<Term> ParseTerms(string collectionName, string key, string value, bool and, bool or, bool not)
         {
@@ -181,7 +215,9 @@ namespace Sir.Search
 
             if (_sessionFactory.TryGetKeyId(collectionId, key.ToHash(), out keyId))
             {
-                foreach (var term in _model.Tokenize(value))
+                var tokens = _model.Tokenize(value.ToCharArray());
+
+                foreach (var term in tokens)
                 {
                     terms.Add(new Term(collectionId, keyId, key, term, and, or, not));
                 }

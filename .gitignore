@@ -9,10 +9,12 @@ packages
 *.vs
 src/publish
 src/publish_tools
+src/sir.httpserver/appdata
 *.log
 *.log.txt
 log/*.*
 *.pos
 *.json
 *.zip
-*.pubxml
+publish
+publish_tools

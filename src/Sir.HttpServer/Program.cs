@@ -1,6 +1,8 @@
 ﻿using System;
 using System.IO;
+using System.Text;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,9 +21,15 @@ namespace Sir.HttpServer
             Host.CreateDefaultBuilder(args)
             .ConfigureLogging(logging =>
             {
+                if (!Directory.Exists("AppData"))
+                    Directory.CreateDirectory("AppData");
+
                 logging.ClearProviders();
-                //logging.AddConsole();
                 logging.AddDebug();
+
+#if !DEBUG
+                logging.AddFile("AppData/sirhttpserver-log-{Date}.txt");
+#endif
             })
             .ConfigureWebHostDefaults(webBuilder =>
             {
@@ -38,5 +46,32 @@ namespace Sir.HttpServer
                     .UseSetting("detailedErrors", "true")
                 .UseStartup<Startup>();
             });
+    }
+
+    public static class WebExtensions
+    {
+        public static string ToStringExcept(this IQueryCollection collection, string key)
+        {
+            var result = new StringBuilder();
+            var index = 0;
+
+            foreach (var field in collection)
+            {
+                if (field.Key != key)
+                {
+                    foreach (var value in field.Value)
+                    {
+                        if (index++ > 0)
+                        {
+                            result.Append("&");
+                        }
+
+                        result.Append($"{field.Key}={value}");
+                    }
+                }
+            }
+
+            return result.ToString();
+        }
     }
 }

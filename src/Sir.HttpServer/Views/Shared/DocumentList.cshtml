@@ -1,40 +1,70 @@
-﻿@model IEnumerable<Sir.HttpServer.Controllers.SearchResultModel>
-@{ 
-    var displayQ = ViewData["qf"] ?? ViewData["q"];
-}
-
+﻿@using Sir;
+@model IEnumerable<Sir.HttpServer.Controllers.SearchResultModel>
 @{
     IList<Sir.HttpServer.Controllers.SearchResultModel> docs = Model == null ?
         new Sir.HttpServer.Controllers.SearchResultModel[0].ToList() : Model.ToList();
-}
-<h3 class="querystats">@docs.Count results of @ViewData["total"] for <span class="querystats">@displayQ</span> in @ViewData["time_ms"] ms</h3>
 
-<div>
-    <ol>
-        @foreach (var item in docs)
+    var jsonDownloadLink = $"{Context.Request.Path.Value.ToLower().Replace("/search", "/query")}{Context.Request.QueryString}";
+    var crawlLink = $"{Context.Request.Path.Value.ToLower().Replace("/search", "/crawl")}{Context.Request.QueryString}";
+    var saveAsLink = $"{Context.Request.Path.Value.ToLower().Replace("/search", "/saveas")}{Context.Request.QueryString}";
+    var ccWetId = "cc_wet".ToHash();
+}
+@if (docs.Count > 0)
+{
+    <div class="toolbar-wrapper">
+        <span>@docs.Count hits of @ViewData["total"] in @ViewData["time_ms"] ms.</span>
+        <div class="toolbar">
+            <a href="@jsonDownloadLink" title="Use a HTTP client to GET result as Content-Type application/json">Download</a> as JSON.
+            <a href="@saveAsLink" title="Save as">Save as</a> collection.
+            <a href="@crawlLink" title="Enrich">Enrich</a>.
+        </div>
+    </div>
+    <div class="result-list">
+        <ul class="document-list">
+            @foreach (var item in docs)
             {
-                var url = item.Document.ContainsKey("_url") ? item.Document["_url"].ToString() : item.Document.ContainsKey("__url") ? item.Document["__url"].ToString() : "www.unknownurl.com";
+                var url = item.Document["url"].ToString();
                 var prefix = url.StartsWith("http") ? string.Empty : "https://";
                 var uri = new Uri(prefix + url);
-                var host = uri.Host.ToString().Replace("www.", string.Empty);
-                var title = item.Document.ContainsKey("title") ? item.Document["title"].ToString() : "Unknown title";
-                var created = (long)item.Document["_created"];
-                var lang = (string)item.Document["_language"];
-            <li>
-                <div>
+                var host = uri.Host.ToString();
+                var path = $"{host}{uri.LocalPath}";
+                var title = item.Document.GetFirstValue("title").ToString()??"Unknown title";
+                var score = (double)item.Document[Sir.Search.SystemFields.Score] * 100;
+                var warcFilename = item.Document.ContainsKey("filename") ? item.Document["filename"].ToString() : null;
+                var wetFileName = warcFilename == null ? null : warcFilename.Replace("/warc", "/wet").Replace(".gz", ".wet.gz");
+                var wetUrlFileName = wetFileName == null ? null : "https://commoncrawl.s3.amazonaws.com/" + Html.Raw(wetFileName);
+                var warcUrlFileName = warcFilename == null ? null : "https://commoncrawl.s3.amazonaws.com/" + Html.Raw(warcFilename);
+                var wetUrl = wetUrlFileName == null ? null : "/wet" + Context.Request.QueryString + "&fileName=" + wetUrlFileName;
+                var warcUrl = warcUrlFileName == null ? null : "/warc" + Context.Request.QueryString + "&fileName=" + warcUrlFileName;
+                var isEnriched = item.Document.ContainsKey(Sir.Search.SystemFields.CollectionId) && 
+                    (ulong)item.Document[Sir.Search.SystemFields.CollectionId] == ccWetId;
+
+                <li>
                     <div class="document-header">
-                    <a href="/upvote/?url=@System.Web.HttpUtility.UrlEncode(uri.ToString())&q=@ViewData["q"]&collection=@ViewBag.Collection">
-                        <div class="upvote" title="upvote">&#9650;</div> 
-                    </a>
-                    <span><a class="result-link" href="@uri.ToString()">@title</a></span>
-                </div>
-                <div class="document-body">
-                    <span style="font-weight:bold;color:black;opacity:0.45;font-size:9pt;">@lang @host</span><br />
-                    <span class="medium-text">Score: @(((double)item.Document["___score"]).ToString("N2"))%</span><br />
-                    <span class="medium-text">Indexed @DateTime.FromBinary(created)</span>
-                </div>
-            </div>
-        </li>
-        }
-    </ol>
-</div>
+                        @if (isEnriched)
+                        {
+                            <span style="color:orangered;" title="Enriched!">&star;</span>
+                        }
+                        <span><a class="result-link" href="@Html.Raw(uri.ToString())">@Html.Raw(title)</a></span>
+                    </div>
+                    <div class="document-body">
+                        <a class="document-subtitle" href="@uri.Scheme://@host"><span class="medium-text">@Html.Raw(host)</span></a><a class="document-subtitle" href="@uri.Scheme://@path"><span class="medium-text">@Html.Raw(uri.LocalPath)</span></a><br />
+                        <span class="medium-text">@score.ToString("N0")%</span>
+                        @if (wetUrl != null)
+                        {
+                            <span class="medium-text">
+                                <a class="warc-link" href="@wetUrl">WET</a>
+                            </span>
+                        }
+                        @if (warcUrl != null)
+                        {
+                            <span class="medium-text">
+                                <a class="warc-link" href="@warcUrl">WARC</a>
+                            </span>
+                        }
+                    </div>
+                </li>
+            }
+        </ul>
+    </div>
+}

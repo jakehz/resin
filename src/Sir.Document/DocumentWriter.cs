@@ -15,15 +15,41 @@ namespace Sir.Document
         private readonly DocIndexWriter _docIx;
         private readonly ulong _collectionId;
         private readonly ISessionFactory _sessionFactory;
-
+        private readonly object _keyLock = new object();
+        
         public DocumentWriter(ulong collectionId, ISessionFactory sessionFactory)
         {
-            var valueStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.val", collectionId)), int.Parse(sessionFactory.Config.Get("value_stream_write_buffer_size")));
-            var keyStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.key", collectionId)));
-            var docStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.docs", collectionId)), int.Parse(sessionFactory.Config.Get("doc_map_stream_write_buffer_size")));
-            var valueIndexStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.vix", collectionId)));
-            var keyIndexStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.kix", collectionId)));
-            var docIndexStream = sessionFactory.CreateAppendStream(Path.Combine(sessionFactory.Dir, string.Format("{0}.dix", collectionId)));
+            var valueStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.val", collectionId)), 
+                int.Parse(sessionFactory.Config.Get("value_stream_write_buffer_size")));
+
+            var keyStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.key", collectionId)));
+
+            var docStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.docs", collectionId)), 
+                int.Parse(sessionFactory.Config.Get("doc_map_stream_write_buffer_size")));
+
+            var valueIndexStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.vix", collectionId)));
+
+            var keyIndexStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.kix", collectionId)));
+
+            var docIndexStream = sessionFactory.CreateAppendStream(
+                Path.Combine(
+                    sessionFactory.Dir, 
+                    string.Format("{0}.dix", collectionId)));
 
             _vals = new ValueWriter(valueStream);
             _keys = new ValueWriter(keyStream);
@@ -35,23 +61,35 @@ namespace Sir.Document
             _sessionFactory = sessionFactory;
         }
 
-        public (long keyId, long valueId) Put(string key, object val, out byte dataType)
+        public long EnsureKeyExists(string keyStr)
         {
-            var keyStr = key.ToString();
             var keyHash = keyStr.ToHash();
             long keyId;
 
             if (!_sessionFactory.TryGetKeyId(_collectionId, keyHash, out keyId))
             {
-                // We have a new key!
+                lock (_keyLock)
+                {
+                    if (!_sessionFactory.TryGetKeyId(_collectionId, keyHash, out keyId))
+                    {
+                        // We have a new key!
 
-                // store key
-                var keyInfo = PutKey(keyStr);
+                        // store key
+                        var keyInfo = PutKey(keyStr);
 
-                keyId = PutKeyInfo(keyInfo.offset, keyInfo.len, keyInfo.dataType);
-                _sessionFactory.PersistKeyMapping(_collectionId, keyHash, keyId);
+                        keyId = PutKeyInfo(keyInfo.offset, keyInfo.len, keyInfo.dataType);
+
+                        // store key mapping
+                        _sessionFactory.RegisterKeyMapping(_collectionId, keyHash, keyId);
+                    }
+                }
             }
 
+            return keyId;
+        }
+
+        public (long keyId, long valueId) Put(long keyId, object val, out byte dataType)
+        {
             // store value
             var valInfo = PutValue(val);
             var valId = PutValueInfo(valInfo.offset, valInfo.len, valInfo.dataType);
@@ -62,9 +100,9 @@ namespace Sir.Document
             return (keyId, valId);
         }
 
-        public long GetNextDocId()
+        public long IncrementDocId()
         {
-            return _docIx.GetNextDocId();
+            return _docIx.IncrementDocId();
         }
 
         public (long offset, int len, byte dataType) PutKey(object value)

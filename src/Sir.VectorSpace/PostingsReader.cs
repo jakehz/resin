@@ -20,27 +20,6 @@ namespace Sir.Search
             _streams = new ConcurrentDictionary<ulong, Stream>();
         }
 
-        public IDictionary<(ulong, long), double> ReadWithScore(ulong collectionId, IList<long> offsets, double score)
-        {
-            var result = new Dictionary<(ulong, long), double>();
-
-            foreach (var offset in offsets)
-            {
-                GetPostingsFromStream(collectionId, offset, result, score);
-            }
-
-            return result;
-        }
-
-        public Stream GetOrTryCreateStream(ulong collectionId)
-        {
-            return _streams.GetOrAdd(
-                collectionId,
-                _sessionFactory.CreateReadStream(
-                    Path.Combine(_sessionFactory.Dir, $"{collectionId}.pos"))
-                );
-        }
-
         protected override IList<(ulong, long)> Read(ulong collectionId, IList<long> offsets)
         {
             var list = new List<(ulong, long)>();
@@ -50,6 +29,20 @@ namespace Sir.Search
 
             return list;
         }
+
+        //public IDictionary<(ulong, long), double> ReadWithPredefinedScore(ulong collectionId, IList<long> offsets, double score)
+        //{
+        //    var collectionRef = _sessionFactory.GetCollectionReference(collectionId);
+
+        //    var result = new Dictionary<(ulong, long), double>();
+
+        //    foreach (var offset in offsets)
+        //    {
+        //        GetPostingsFromStream(collectionRef, offset, result, score);
+        //    }
+
+        //    return result;
+        //}
 
         private void GetPostingsFromStream(ulong collectionId, long postingsOffset, IDictionary<(ulong collectionId, long docId), double> result, double score)
         {
@@ -65,7 +58,7 @@ namespace Sir.Search
 
         private void GetPostingsFromStream(ulong collectionId, long postingsOffset, IList<(ulong collectionId, long docId)> result)
         {
-            var stream = GetOrTryCreateStream(collectionId);
+            var stream = GetOrCreateStream(collectionId);
 
             stream.Seek(postingsOffset, SeekOrigin.Begin);
 
@@ -88,6 +81,15 @@ namespace Sir.Search
             {
                 result.Add((collectionId, docId));
             }
+        }
+
+        private Stream GetOrCreateStream(ulong collectionId)
+        {
+            return _streams.GetOrAdd(
+                collectionId,
+                _sessionFactory.CreateReadStream(
+                    Path.Combine(_sessionFactory.Dir, $"{collectionId}.pos"))
+                );
         }
 
         public void Dispose()

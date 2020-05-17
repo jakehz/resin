@@ -3,90 +3,86 @@ using Sir.VectorSpace;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 
 namespace Sir.Search
 {
     public class BocModel : IStringModel
     {
-        public IEnumerable<IVector> Tokenize(string text)
+        public double IdenticalAngle => 0.99d;
+        public double FoldAngle => 0.65d;
+        public int VectorWidth => 256;
+        public int UnicodeStartingPoint => 32;
+
+        public IEnumerable<IVector> Tokenize(Memory<char> source)
         {
-            Span<char> source = text.ToLower().ToCharArray();
-            var offset = 0;
-            bool word = false;
-            int index = 0;
-            var embeddings = new List<IVector>();
-            var embedding = new SortedList<int, float>();
+            var tokens = new List<IVector>();
 
-            for (; index < source.Length; index++)
+            if (source.Length > 0)
             {
-                char c = source[index];
+                var embedding = new SortedList<int, float>();
+                var offset = 0;
+                int index = 0;
+                var span = source.Span;
 
-                if (word)
+                for (; index < source.Length; index++)
                 {
-                    if (!char.IsLetterOrDigit(c))
+                    char c = char.ToLower(span[index]);
+
+                    if (c < UnicodeStartingPoint || c > UnicodeStartingPoint + VectorWidth)
                     {
-                        var len = index - offset;
-
-                        if (len > 0)
-                        {
-                            embeddings.Add(
-                                new IndexedVector(
-                                    embedding, 
-                                    source.Slice(offset, len).ToArray(), 
-                                    VectorWidth));
-
-                            embedding = new SortedList<int, float>();
-                        }
-
-                        offset = index;
-                        word = false;
+                        continue;
                     }
-                    else
-                    {
-                        embedding.AddOrAppendToComponent(c, 1);
-                    }
-                }
-                else
-                {
+
                     if (char.IsLetterOrDigit(c))
                     {
-                        word = true;
-                        offset = index;
-
-                        embedding.AddOrAppendToComponent(c, 1);
+                        embedding.AddOrAppendToComponent(c);
                     }
                     else
                     {
-                        offset++;
+                        if (embedding.Count > 0)
+                        {
+                            var len = index - offset;
+                            var slice = source.Slice(offset, len);
+
+                            var vector = new IndexedVector(
+                                embedding,
+                                slice,
+                                VectorWidth);
+
+                            embedding.Clear();
+                            tokens.Add(vector);
+                        }
+
+                        offset = index + 1;
                     }
                 }
-            }
 
-            if (word)
-            {
-                var len = index - offset;
-
-                if (len > 0)
+                if (embedding.Count > 0)
                 {
-                    embeddings.Add(new IndexedVector(embedding, source.Slice(offset, len).ToArray(), VectorWidth));
+                    var len = index - offset;
+
+                    var vector = new IndexedVector(
+                                embedding,
+                                source.Slice(offset, len),
+                                VectorWidth);
+
+                    tokens.Add(vector);
                 }
             }
 
-            return embeddings;
+            return tokens;
         }
-
-        public double IdenticalAngle => 0.99;
-        public double FoldAngle => 0.55d;
-        public int VectorWidth => int.MaxValue;
 
         public double CosAngle(IVector vec1, IVector vec2)
         {
-            var dotProduct = vec1.Value.DotProduct(vec2.Value);
-            var dotSelf1 = vec1.Value.DotProduct(vec1.Value);
-            var dotSelf2 = vec2.Value.DotProduct(vec2.Value);
-            
-            return (dotProduct / (Math.Sqrt(dotSelf1) * Math.Sqrt(dotSelf2)));
+            //var dotProduct = vec1.Value.DotProduct(vec2.Value);
+            //var dotSelf1 = vec1.Value.DotProduct(vec1.Value);
+            //var dotSelf2 = vec2.Value.DotProduct(vec2.Value);
+            //return (dotProduct / (Math.Sqrt(dotSelf1) * Math.Sqrt(dotSelf2)));
+
+            return vec1.Value.DotProduct(vec2.Value) / (vec1.Value.Norm(2) * vec2.Value.Norm(2));
         }
 
         public double CosAngle(IVector vector, long vectorOffset, int componentCount, Stream vectorStream)
@@ -112,6 +108,34 @@ namespace Sir.Search
             var dotSelf2 = otherVector.DotProduct(otherVector);
 
             return (dotProduct / (Math.Sqrt(dotSelf1) * Math.Sqrt(dotSelf2)));
+        }
+
+        public double CosAngle(IVector vector, long vectorOffset, int componentCount, MemoryMappedViewAccessor vectorView)
+        {
+            var otherVector = DeserializeVector(vectorOffset, componentCount, vectorView);
+
+            var dotProduct = vector.Value.DotProduct(otherVector.Value);
+            var dotSelf1 = vector.Value.DotProduct(vector.Value);
+            var dotSelf2 = otherVector.Value.DotProduct(otherVector.Value);
+
+            return (dotProduct / (Math.Sqrt(dotSelf1) * Math.Sqrt(dotSelf2)));
+        }
+
+        private IndexedVector DeserializeVector(long vectorOffset, int componentCount, MemoryMappedViewAccessor vectorView)
+        {
+            var index = new int[componentCount];
+            var values = new float[componentCount];
+            var read = vectorView.ReadArray(vectorOffset, index, 0, index.Length);
+
+            if (read < componentCount)
+                throw new Exception("bad data");
+
+            read = vectorView.ReadArray(vectorOffset + componentCount * sizeof(int), values, 0, values.Length);
+
+            if (read < componentCount)
+                throw new Exception("bad data");
+
+            return new IndexedVector(index, values, VectorWidth, null);
         }
     }
 }

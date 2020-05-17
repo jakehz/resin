@@ -13,29 +13,56 @@ namespace Sir
         public Vector<float> Value { get; private set; }
         public int ComponentCount { get; }
 
+        public IndexedVector(IList<float> values, Memory<char> data, int vectorWidth)
+        {
+            var tuples = new Tuple<int, float>[Math.Min(values.Count, vectorWidth)];
+            var i = 0;
+
+            foreach (var x in values)
+            {
+                if (i == (vectorWidth))
+                    break;
+
+                tuples[i] = new Tuple<int, float>(i, x);
+
+                i++;
+            }
+
+            Value = CreateVector.Sparse(
+                SparseVectorStorage<float>.OfIndexedEnumerable(vectorWidth, tuples));
+
+            ComponentCount = tuples.Length;
+
+            Data = data;
+        }
+
         public IndexedVector(SortedList<int, float> dictionary, Memory<char> data, int vectorWidth)
         {
-            var tuples = new Tuple<int, float>[dictionary.Count];
-
+            var tuples = new Tuple<int, float>[Math.Min(dictionary.Count, vectorWidth)];
             var i = 0;
 
             foreach (var p in dictionary)
             {
+                if (i == vectorWidth)
+                    break;
+
                 tuples[i++] = new Tuple<int, float>(p.Key, p.Value);
             }
 
             Value = CreateVector.SparseOfIndexed(vectorWidth, tuples);
-
             ComponentCount = tuples.Length;
             Data = data;
         }
 
-        public IndexedVector(int[] index, float[] values, int vectorWidth)
+        public IndexedVector(int[] index, float[] values, int vectorWidth, Memory<char> data)
         {
-            var tuples = new Tuple<int, float>[index.Length];
+            var tuples = new Tuple<int, float>[Math.Min(index.Length, vectorWidth)];
 
             for (int i = 0; i < index.Length; i++)
             {
+                if (i == vectorWidth)
+                    break;
+
                 tuples[i] = new Tuple<int, float>(index[i], values[i]);
             }
 
@@ -43,6 +70,8 @@ namespace Sir
                 SparseVectorStorage<float>.OfIndexedEnumerable(vectorWidth, tuples));
 
             ComponentCount = tuples.Length;
+
+            Data = data;
         }
 
         public IndexedVector(Tuple<int, float>[] tuples, int vectorWidth)
@@ -54,6 +83,19 @@ namespace Sir
         public IndexedVector(Vector<float> vector)
         {
             Value = vector;
+            ComponentCount = ((SparseVectorStorage<float>)Value.Storage).Length;
+        }
+
+        public IndexedVector(IEnumerable<IVector> vectors)
+        { 
+            foreach (var vector in vectors)
+            {
+                if (Value == null)
+                    Value = vector.Value;
+                else
+                    Value.Add(vector.Value);
+            }
+
             ComponentCount = ((SparseVectorStorage<float>)Value.Storage).Length;
         }
 

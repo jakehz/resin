@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Sir.HttpServer.Features;
 using System;
 using System.IO;
 using System.Linq;
@@ -11,12 +12,14 @@ namespace Sir.HttpServer
         public static void RegisterComponents(
             IServiceCollection services, PluginsCollection plugins, IServiceProvider container)
         {
+            services.AddSingleton(typeof(JobQueue));
+            services.AddSingleton(typeof(SaveAsJobQueue));
         }
 
         public static IServiceProvider Configure(IServiceCollection services)
         {
             var assemblyPath = Directory.GetCurrentDirectory();
-            var config = new IniConfiguration(Path.Combine(assemblyPath, "sir.ini"));
+            var config = new KeyValueConfiguration(Path.Combine(assemblyPath, "sir.ini"));
 
             // register config
             services.Add(new ServiceDescriptor(typeof(IConfigurationProvider), config));
@@ -24,7 +27,9 @@ namespace Sir.HttpServer
             // register plugin startup and teardown handlers
 
 #if DEBUG
-            assemblyPath = Path.Combine(assemblyPath, "bin", "Debug", "netcoreapp3.0");
+            var frameworkVersion = AppContext.TargetFrameworkName.Substring(AppContext.TargetFrameworkName.IndexOf("=v") + 2);
+
+            assemblyPath = Path.Combine(assemblyPath, "bin", "Debug", $"netcoreapp{frameworkVersion}");
 #endif
 
             var files = Directory.GetFiles(assemblyPath, "*.plugin.dll");

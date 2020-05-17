@@ -1,7 +1,9 @@
 ﻿using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using Sir.Search;
 
 namespace Sir.HttpServer.Controllers
 {
@@ -13,16 +15,16 @@ namespace Sir.HttpServer.Controllers
         public SearchController(
             PluginsCollection plugins, 
             IConfigurationProvider config, 
-            IStringModel tokenizer,
-            ISessionFactory sessionFactory) : base(config, sessionFactory)
+            IStringModel model,
+            SessionFactory sessionFactory) : base(config, sessionFactory)
         {
             _plugins = plugins;
-            _model = tokenizer;
+            _model = model;
         }
 
         [HttpGet("/search/")]
         [HttpPost("/search/")]
-        public IActionResult Index(string q, string collection)
+        public async Task<IActionResult> Index(string q)
         {
             if (string.IsNullOrWhiteSpace(q)) return View();
 
@@ -38,7 +40,7 @@ namespace Sir.HttpServer.Controllers
                 throw new System.NotSupportedException();
             }
 
-            var result = reader.Read(Request, _model);
+            var result = await reader.Read(Request, _model);
 
             ViewData["time_ms"] = timer.ElapsedMilliseconds;
             ViewData["total"] = result.Total;

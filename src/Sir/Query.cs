@@ -3,44 +3,50 @@
 namespace Sir
 {
     /// <summary>
-    /// A boolean query,
+    /// A boolean query.
     /// </summary>
-    public class Query : BooleanStatement
+    /// <example>
+    /// {
+    ///	        "or":{
+    ///		        "collection":"cc_wat",
+    ///		        "title":"prom dresses bride"
+    ///     }
+    /// }
+    /// </example>
+    public class Query : BooleanStatement, IQuery
     {
         public IList<Term> Terms { get; }
+        public HashSet<string> Select { get; }
         public Query And { get; set; }
         public Query Or { get; set; }
         public Query Not { get; set; }
 
         public Query(
-            IList<Term> terms, 
+            IList<Term> terms,
+            IEnumerable<string> select,
             bool and,
             bool or,
             bool not) : base(and, or, not)
         {
             Terms = terms;
+            Select = new HashSet<string>(select);
         }
 
-        public int GetDivider()
-        {
-            return GetTermCount() / GetCollectionCount();
-        }
-
-        public int GetTermCount()
+        public int TotalNumberOfTerms()
         {
             var count = Terms.Count;
 
             if (And != null)
             {
-                count += And.GetTermCount();
+                count += And.TotalNumberOfTerms();
             }
             if (Or != null)
             {
-                count += Or.GetTermCount();
+                count += Or.TotalNumberOfTerms();
             }
             if (Not != null)
             {
-                count += Not.GetTermCount();
+                count += Not.TotalNumberOfTerms();
             }
 
             return count;
@@ -50,27 +56,51 @@ namespace Sir
         {
             var dic = new HashSet<ulong>();
 
-            foreach(var term in Terms)
+            GetNumOfCollections(dic);
+
+            return dic.Count;
+        }
+
+        public void GetNumOfCollections(HashSet<ulong> dic)
+        {
+            foreach (var term in Terms)
             {
                 dic.Add(term.CollectionId);
             }
 
-            var count = dic.Count;
-
             if (And != null)
             {
-                count += And.GetCollectionCount();
+                And.GetNumOfCollections(dic);
             }
             if (Or != null)
             {
-                count += Or.GetCollectionCount();
+                Or.GetNumOfCollections(dic);
             }
             if (Not != null)
             {
-                count += Not.GetCollectionCount();
+                Not.GetNumOfCollections(dic);
             }
+        }
 
-            return count;
+        public IEnumerable<Query> All()
+        {
+            yield return this;
+
+            if (And != null)
+            {
+                foreach (var q in And.All())
+                    yield return q;
+            }
+            if (Or != null)
+            {
+                foreach (var q in Or.All())
+                    yield return q;
+            }
+            if (Not != null)
+            {
+                foreach (var q in Not.All())
+                    yield return q;
+            }
         }
     }
 
@@ -160,5 +190,53 @@ namespace Sir
             _or = or;
             _not = not;
         }
+    }
+
+    /// <summary>
+    /// A join query.
+    /// </summary>
+    /// <example>
+    /// {
+    ///        "join":"cc_wet,url",
+    ///        "query":
+    ///        {
+    ///	        "or":{
+    ///		        "collection":"cc_wat",
+    ///		        "title":"red dress"
+    ///         }
+    ///     }
+    /// }
+    /// </example>
+    //public class Join : IQuery
+    //{
+    //    public Join(Query query, string collection, string primaryKey)
+    //    {
+    //        Query = query;
+    //        Collection = collection;
+    //        PrimaryKey = primaryKey;
+    //    }
+
+    //    public string PrimaryKey { get;}
+    //    public string Collection { get; }
+    //    public Query Query { get; }
+
+    //    public int GetDivider()
+    //    {
+    //        return Query.GetDivider();
+    //    }
+    //}
+
+    public interface IQuery
+    {
+        bool IsIntersection { get; }
+        bool IsUnion { get; }
+        bool IsSubtraction { get; }
+        Query And { get; set; }
+        Query Or { get; set; }
+        Query Not { get; set; }
+        IList<Term> Terms { get; }
+        HashSet<string> Select { get; }
+        IEnumerable<Query> All();
+        int TotalNumberOfTerms();
     }
 }

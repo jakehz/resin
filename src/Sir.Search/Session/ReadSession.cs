@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace Sir.Search
@@ -14,14 +13,14 @@ namespace Sir.Search
     /// <summary>
     /// Read session targeting a single collection.
     /// </summary>
-    public class ReadSession : IDisposable, IReadSession
+    public class ReadSession : DocumentStreamSession, IDisposable, IReadSession //TODO: rename to QuerySession.
     {
         private readonly SessionFactory _sessionFactory;
         private readonly IConfigurationProvider _config;
         private readonly IStringModel _model;
         private readonly IPostingsReader _postingsReader;
         private readonly ConcurrentDictionary<ulong, DocumentReader> _streamReaders;
-        private readonly ConcurrentDictionary<ulong, INodeReader> _nodeReaders;
+
         private readonly ILogger<ReadSession> _logger;
 
         public ReadSession(
@@ -29,37 +28,23 @@ namespace Sir.Search
             IConfigurationProvider config,
             IStringModel model,
             IPostingsReader postingsReader,
-            ILogger<ReadSession> logger)
+            ILogger<ReadSession> logger) : base(sessionFactory)
         {
             _sessionFactory = sessionFactory;
             _config = config;
             _model = model;
             _streamReaders = new ConcurrentDictionary<ulong, DocumentReader>();
             _postingsReader = postingsReader;
-            _nodeReaders = new ConcurrentDictionary<ulong, INodeReader>();
             _logger = logger;
         }
 
-        public void Dispose()
+        public ReadResult Read(IQuery query, int skip, int take, string primaryKey = "url")
         {
-            foreach (var reader in _streamReaders.Values)
-            {
-                reader.Dispose();
-            }
-
-            foreach (var reader in _nodeReaders.Values)
-                reader.Dispose();
-
-            _postingsReader.Dispose();
-        }
-
-        public ReadResult Read(Query query, int skip, int take)
-        {
-            var result = MapReduce(query, skip, take);
+            var result = MapReduceSort(query, skip, take);
 
             if (result != null)
             {
-                var docs = ReadDocs(result.SortedDocuments, query);
+                var docs = ReadDocs(result.SortedDocuments, primaryKey, query.Select);
 
                 return new ReadResult { Query = query, Total = result.Total, Docs = docs };
             }
@@ -67,52 +52,25 @@ namespace Sir.Search
             return new ReadResult { Query = query, Total = 0, Docs = new IDictionary<string, object>[0] };
         }
 
-        public void EnsureIsValid(Query query, long docId)
-        {
-            foreach (var term in query.Terms)
-            {
-                var indexReader = GetOrTryCreateIndexReader(term.CollectionId, term.KeyId);
-
-                if (indexReader != null)
-                {
-                    var hit = indexReader.ClosestTerm(term.Vector, _model);
-
-                    if (hit == null || hit.Score < _model.IdenticalAngle)
-                    {
-                        throw new DataMisalignedException($"\"{term}\" not found.");
-                    }
-
-                    var docIds = _postingsReader
-                        .ReadWithScore(term.CollectionId, hit.Node.PostingsOffsets, _model.IdenticalAngle);
-
-                    if (!docIds.ContainsKey((term.CollectionId, docId)))
-                    {
-                        throw new DataMisalignedException(
-                            $"document {docId} not found in postings list for term \"{term}\".");
-                    }
-                }
-            }
-        }
-
-        private ScoredResult MapReduce(Query query, int skip, int take)
+        private ScoredResult MapReduceSort(IQuery query, int skip, int take)
         {
             var timer = Stopwatch.StartNew();
 
+            // Map
             Map(query);
 
             _logger.LogInformation($"mapping took {timer.Elapsed}");
-
             timer.Restart();
 
-            var result = new Dictionary<(ulong, long), double>();
-
-            _postingsReader.Reduce(query, result);
+            // Reduce
+            IDictionary<(ulong, long), double> scoredResult = new Dictionary<(ulong, long), double>();
+            _postingsReader.Reduce(query, query.TotalNumberOfTerms(),ref  scoredResult);
 
             _logger.LogInformation("reducing took {0}", timer.Elapsed);
-
             timer.Restart();
 
-            var sorted = Sort(result, skip, take);
+            // Sort
+            var sorted = Sort(scoredResult, skip, take);
 
             _logger.LogInformation("sorting took {0}", timer.Elapsed);
 
@@ -122,31 +80,34 @@ namespace Sir.Search
         /// <summary>
         /// Map query terms to posting list locations.
         /// </summary>
-        public void Map(Query query)
+        private void Map(IQuery query)
         {
             if (query == null)
                 return;
 
-            Parallel.ForEach(query.Terms, term =>
-            //foreach (var term in query.Terms)
+            //foreach (var q in query.All())
+            Parallel.ForEach(query.All(), q =>
             {
-                var indexReader = GetOrTryCreateIndexReader(term.CollectionId, term.KeyId);
-
-                if (indexReader != null)
+                //foreach (var term in q.Terms)
+                Parallel.ForEach(q.Terms, term =>
                 {
-                    var hit = indexReader.ClosestTerm(term.Vector, _model);
+                    var columnReader = CreateColumnReader(term.CollectionId, term.KeyId);
 
-                    if (hit != null && hit.Score > 0)
+                    if (columnReader != null)
                     {
-                        term.Score = hit.Score;
-                        term.PostingsOffsets = hit.Node.PostingsOffsets;
-                    }
-                }
-            });
+                        using (columnReader)
+                        {
+                            var hit = columnReader.ClosestMatch(term.Vector, _model);
 
-            Map(query.And);
-            Map(query.Or);
-            Map(query.Not);
+                            if (hit != null)
+                            {
+                                term.Score = hit.Score;
+                                term.PostingsOffsets = hit.Node.PostingsOffsets;
+                            }
+                        }
+                    }
+                });
+            });
         }
 
         private static ScoredResult Sort(IDictionary<(ulong, long), double> documents, int skip, int take)
@@ -162,74 +123,104 @@ namespace Sir.Search
             );
 
             var index = skip > 0 ? skip : 0;
-            var count = Math.Min(sortedByScore.Count, take > 0 ? take : sortedByScore.Count);
+            int count;
 
-            return new ScoredResult { SortedDocuments = sortedByScore.GetRange(index, count), Total = sortedByScore.Count };
+            if (take == 0)
+                count = sortedByScore.Count - (index);
+            else
+                count = Math.Min(sortedByScore.Count - (index), take);
+
+            return new ScoredResult 
+            { 
+                SortedDocuments = sortedByScore.GetRange(index, count), 
+                Total = sortedByScore.Count 
+            };
         }
 
-        public INodeReader GetOrTryCreateIndexReader(ulong collectionId, long keyId)
+        private IList<IDictionary<string, object>> ReadDocs(
+            IEnumerable<KeyValuePair<(ulong collectionId, long docId), double>> docIds,
+            string primaryKey,
+            HashSet<string> select)
+        {
+            if (!select.Contains(primaryKey))
+            {
+                select.Add(primaryKey);
+            }
+
+            var result = new List<IDictionary<string, object>>();
+            var documentsByPrimaryKey = new Dictionary<ulong, IDictionary<string, object>>();
+            var timer = Stopwatch.StartNew();
+
+            foreach (var d in docIds)
+            {
+                var doc = ReadDoc(d.Key, select, d.Value);
+                var docHash = doc[primaryKey].ToString().ToHash();
+                IDictionary<string, object> existingDoc;
+
+                if (documentsByPrimaryKey.TryGetValue(docHash, out existingDoc))
+                {
+                    foreach (var field in doc)
+                    {
+                        // TODO: add condition for when there are two doc versions with different created dates.
+                        if (field.Key != primaryKey && select.Contains(field.Key))
+                        {
+                            object existingValue;
+
+                            if (existingDoc.TryGetValue(field.Key, out existingValue))
+                            {
+                                existingDoc[field.Key] = new object[] { existingValue, field.Value };
+                            }
+                            else
+                            {
+                                existingDoc[field.Key] = field.Value;
+                            }
+                        }
+                    }
+
+                    existingDoc[SystemFields.Score] = (double)existingDoc[SystemFields.Score] + (double)doc[SystemFields.Score]; 
+                }
+                else
+                {
+                    doc[SystemFields.Score] = (double)doc[SystemFields.Score];
+                    result.Add(doc);
+                    documentsByPrimaryKey.Add(docHash, doc);
+                }
+            }
+
+            _logger.LogInformation($"reading documents took {timer.Elapsed}");
+            timer.Restart();
+
+            result.Sort(
+                delegate (IDictionary<string, object> doc1,
+                IDictionary<string, object> doc2)
+                {
+                    return ((double)doc2[SystemFields.Score]).CompareTo((double)doc1[SystemFields.Score]);
+                });
+
+            _logger.LogInformation($"second sorting took {timer.Elapsed}");
+
+            return result;
+        }
+
+        public IColumnReader CreateColumnReader(ulong collectionId, long keyId)
         {
             var ixFileName = Path.Combine(_sessionFactory.Dir, string.Format("{0}.{1}.ix", collectionId, keyId));
 
             if (!File.Exists(ixFileName))
                 return null;
 
-            //return _nodeReaders.GetOrAdd(
-            //    $"{collectionId}.{keyId}".ToHash(), new NodeReader(
-            //        collectionId,
-            //        keyId,
-            //        _sessionFactory,
-            //        _sessionFactory.CreateReadStream(Path.Combine(_sessionFactory.Dir, $"{collectionId}.vec")),
-            //        _sessionFactory.CreateReadStream(ixFileName)));
-
-            return new NodeReader(
+            return new ColumnStreamReader(
                     collectionId,
                     keyId,
                     _sessionFactory,
-                    _sessionFactory.CreateReadStream(Path.Combine(_sessionFactory.Dir, $"{collectionId}.vec")),
-                    _sessionFactory.CreateReadStream(ixFileName));
+                    _logger);
         }
 
-        public DocumentReader GetOrTryCreateDocumentReader(ulong collectionId)
+        public override void Dispose()
         {
-            return _streamReaders.GetOrAdd(
-                collectionId,
-                new DocumentReader(collectionId, _sessionFactory)
-                );
-        }
+            base.Dispose();
 
-        public IList<IDictionary<string, object>> ReadDocs(
-            IEnumerable<KeyValuePair<(ulong collectionId, long docId), double>> docs,
-            Query query)
-        {
-            var result = new List<IDictionary<string, object>>();
-            var scoreDivider = query.GetDivider();
-
-            foreach (var dkvp in docs)
-            {
-                var streamReader = GetOrTryCreateDocumentReader(dkvp.Key.collectionId);
-                var docInfo = streamReader.GetDocumentAddress(dkvp.Key.docId);
-                var docMap = streamReader.GetDocumentMap(docInfo.offset, docInfo.length);
-                var doc = new Dictionary<string, object>();
-
-                for (int i = 0; i < docMap.Count; i++)
-                {
-                    var kvp = docMap[i];
-                    var kInfo = streamReader.GetAddressOfKey(kvp.keyId);
-                    var vInfo = streamReader.GetAddressOfValue(kvp.valId);
-                    var key = streamReader.GetKey(kInfo.offset, kInfo.len, kInfo.dataType);
-                    var val = streamReader.GetValue(vInfo.offset, vInfo.len, vInfo.dataType);
-
-                    doc[key.ToString()] = val;
-                }
-
-                doc["___docid"] = dkvp.Key.docId;
-                doc["___score"] = (dkvp.Value / scoreDivider) * 100;
-
-                result.Add(doc);
-            }
-
-            return result;
+            _postingsReader.Dispose();
         }
     }
 }

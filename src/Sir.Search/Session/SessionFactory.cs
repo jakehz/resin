@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using Sir.Core;
 using Sir.Document;
 using Sir.KeyValue;
 using Sir.VectorSpace;
@@ -7,8 +8,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.MemoryMappedFiles;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Sir.Search
 {
@@ -19,13 +20,12 @@ namespace Sir.Search
     {
         private ConcurrentDictionary<ulong, ConcurrentDictionary<ulong, long>> _keys;
         private readonly ConcurrentDictionary<string, IList<(long offset, long length)>> _pageInfo;
-        private readonly ConcurrentDictionary<string, MemoryMappedFile> _mmfs;
         private ILogger<SessionFactory> _logger;
-        private readonly ILoggerFactory _loggerFactory;
 
         public string Dir { get; }
         public IConfigurationProvider Config { get; }
         public IStringModel Model { get; }
+        public ILoggerFactory LoggerFactory { get; }
 
         public SessionFactory(IConfigurationProvider config, IStringModel model, ILoggerFactory loggerFactory)
         {
@@ -33,6 +33,7 @@ namespace Sir.Search
 
             Dir = config.Get("data_dir");
             Config = config;
+            Model = model;
 
             if (!Directory.Exists(Dir))
             {
@@ -40,35 +41,18 @@ namespace Sir.Search
             }
 
             _pageInfo = new ConcurrentDictionary<string, IList<(long offset, long length)>>();
-            _mmfs = new ConcurrentDictionary<string, MemoryMappedFile>();
-            Model = model;
-
             _logger = loggerFactory.CreateLogger<SessionFactory>();
-            _loggerFactory = loggerFactory;
-
+            LoggerFactory = loggerFactory;
             _keys = LoadKeys();
 
-            _logger.LogInformation($"initiated in {time.Elapsed}");
+            _logger.LogInformation($"loaded keys in {time.Elapsed}");
+
+            _logger.LogInformation($"sessionfactory is initiated.");
         }
 
-        public MemoryMappedFile OpenMMF(string fileName)
+        public ILogger<T> GetLogger<T>()
         {
-            var mapName = fileName.Replace(":", "").Replace("\\", "_");
-
-            try
-            {
-                return _mmfs.GetOrAdd(mapName, x =>
-                {
-                    return MemoryMappedFile.CreateFromFile(fileName, FileMode.Open, mapName, 0, MemoryMappedFileAccess.ReadWrite);
-                });
-            }
-            catch
-            {
-                return _mmfs.GetOrAdd(mapName, x =>
-                {
-                    return MemoryMappedFile.OpenExisting(mapName);
-                });
-            }
+            return LoggerFactory.CreateLogger<T>();
         }
 
         public long GetDocCount(string collection)
@@ -83,55 +67,157 @@ namespace Sir.Search
 
         public void Truncate(ulong collectionId)
         {
+            var count = 0;
+
             foreach (var file in Directory.GetFiles(Dir, $"{collectionId}*"))
+            {
                 File.Delete(file);
+                count++;
+            }
 
             _pageInfo.Clear();
 
-            _keys.Clear();
+            _keys.Remove(collectionId, out _);
 
-            _logger.LogInformation($"truncated {collectionId}");
+            _logger.LogInformation($"truncated collection {collectionId} ({count} files)");
         }
 
         public void TruncateIndex(ulong collectionId)
         {
+            var count = 0;
+
             foreach (var file in Directory.GetFiles(Dir, $"{collectionId}*.ix"))
             {
                 File.Delete(file);
+                count++;
             }
             foreach (var file in Directory.GetFiles(Dir, $"{collectionId}*.ixp"))
             {
                 File.Delete(file);
+                count++;
             }
             foreach (var file in Directory.GetFiles(Dir, $"{collectionId}*.vec"))
             {
                 File.Delete(file);
+                count++;
             }
             foreach (var file in Directory.GetFiles(Dir, $"{collectionId}*.pos"))
             {
                 File.Delete(file);
+                count++;
             }
+
+            _logger.LogInformation($"truncated index {collectionId} ({count} files)");
 
             _pageInfo.Clear();
         }
 
-        public void WriteConcurrent(Job job)
+        public void SaveAs(
+            ulong targetCollectionId, 
+            IEnumerable<IDictionary<string, object>> documents,
+            HashSet<string> indexFieldNames,
+            HashSet<string> storeFieldNames,
+            IStringModel model,
+            int reportSize = 1000)
         {
-            using (var writeSession = CreateWriteSession(job.CollectionId, job.Model))
+            var job = new WriteJob(targetCollectionId, documents, model, storeFieldNames, indexFieldNames);
+
+            Write(job, reportSize);
+        }
+
+        public void Write(WriteJob job, WriteSession writeSession, IndexSession indexSession, int reportSize = 1000)
+        {
+            _logger.LogInformation($"writing to collection {job.CollectionId}");
+
+            var time = Stopwatch.StartNew();
+
+            using (var indexer = new ProducerConsumerQueue<(long docId, IDictionary<string, object> document)>(1, document =>
             {
-                foreach(var document in job.Documents)
-                    writeSession.Write(document);
+                Parallel.ForEach(document.document, kv =>
+                //foreach (var kv in document.document)
+                {
+                    if (job.IndexedFieldNames.Contains(kv.Key) && kv.Value != null)
+                    {
+                        var keyId = writeSession.EnsureKeyExists(kv.Key);
+
+                        indexSession.Put(document.docId, keyId, kv.Value.ToString());
+                    }
+                });
+            }))
+            {
+                using (var writer = new ProducerConsumerQueue<IDictionary<string, object>>(1, document =>
+                {
+                    var docId = writeSession.Write(document, job.StoredFieldNames);
+
+                    indexer.Enqueue((docId, document));
+                }))
+                {
+                    var batchNo = 0;
+
+                    foreach (var batch in job.Documents.Batch(reportSize))
+                    {
+                        var batchTime = Stopwatch.StartNew();
+
+                        foreach (var document in batch)
+                        {
+                            writer.Enqueue(document);
+                        }
+
+                        var info = indexSession.GetIndexInfo();
+                        var t = batchTime.Elapsed.TotalMilliseconds;
+                        var docsPerSecond = (int)(reportSize / t * 1000);
+                        var debug = string.Join('\n', info.Info.Select(x => x.ToString()));
+
+                        _logger.LogInformation($"batch {++batchNo}\n{debug}\n{docsPerSecond} docs/s \n write queue {writer.Count}\n index queue {indexer.Count}");
+                    }
+                }
+            }
+
+            _logger.LogInformation($"processed write job (collection {job.CollectionId}), time in total: {time.Elapsed}");
+        }
+
+        public void Write(WriteJob job, int reportSize = 1000)
+        {
+            using (var writeSession = CreateWriteSession(job.CollectionId))
+            using (var indexSession = CreateIndexSession(job.CollectionId))
+            {
+                Write(job, writeSession, indexSession, reportSize);
             }
         }
 
-        public void WriteConcurrent(IEnumerable<IDictionary<string, object>> documents, IStringModel model)
+        public void Write(WriteJob job, IndexSession indexSession, int reportSize)
         {
-            foreach (var group in documents.GroupBy(d => (string)d["___collectionid"]))
+            using (var writeSession = CreateWriteSession(job.CollectionId))
             {
-                using (var writeSession = CreateWriteSession(group.Key.ToHash(), model))
+                Write(job, writeSession, indexSession, reportSize);
+            }
+        }
+
+        public void Write(
+            IEnumerable<IDictionary<string, object>> documents, 
+            IStringModel model, 
+            HashSet<string> storedFieldNames,
+            HashSet<string> indexedFieldNames,
+            int reportSize = 1000
+            )
+        {
+            foreach (var group in documents.GroupBy(d => (string)d[SystemFields.CollectionId]))
+            {
+                var collectionId = group.Key.ToHash();
+
+                using (var writeSession = CreateWriteSession(collectionId))
+                using (var indexSession = CreateIndexSession(collectionId))
                 {
-                    foreach(var document in group)
-                        writeSession.Write(document);
+                    Write(
+                        new WriteJob(
+                            collectionId, 
+                            group, 
+                            model, 
+                            storedFieldNames, 
+                            indexedFieldNames), 
+                        writeSession, 
+                        indexSession,
+                        reportSize);
                 }
             }
         }
@@ -159,7 +245,7 @@ namespace Sir.Search
             });
         }
 
-        public void RefreshKeys()
+        public void Refresh()
         {
             _keys = LoadKeys();
         }
@@ -200,7 +286,7 @@ namespace Sir.Search
             return allkeys;
         }
 
-        public void PersistKeyMapping(ulong collectionId, ulong keyHash, long keyId)
+        public void RegisterKeyMapping(ulong collectionId, ulong keyHash, long keyId)
         {
             var fileName = Path.Combine(Dir, string.Format("{0}.kmap", collectionId));
             ConcurrentDictionary<ulong, long> keys;
@@ -250,27 +336,24 @@ namespace Sir.Search
             }
         }
 
-        public DocumentStreamSession CreateDocumentStreamSession(ulong collectionId)
+        public DocumentStreamSession CreateDocumentStreamSession()
         {
-            return new DocumentStreamSession(new DocumentReader(collectionId, this));
+            return new DocumentStreamSession(this);
         }
 
-        public WriteSession CreateWriteSession(ulong collectionId, IStringModel model)
+        public WriteSession CreateWriteSession(ulong collectionId)
         {
             var documentWriter = new DocumentWriter(collectionId, this);
 
             return new WriteSession(
                 collectionId,
-                this,
-                documentWriter,
-                model,
-                CreateIndexSession(collectionId)
+                documentWriter
             );
         }
 
         public IndexSession CreateIndexSession(ulong collectionId)
         {
-            return new IndexSession(collectionId, this, Model, Config, _loggerFactory.CreateLogger<IndexSession>());
+            return new IndexSession(collectionId, this, Model, Config, LoggerFactory.CreateLogger<IndexSession>());
         }
 
         public IReadSession CreateReadSession()
@@ -280,17 +363,7 @@ namespace Sir.Search
                 Config,
                 Model,
                 new PostingsReader(this),
-                _loggerFactory.CreateLogger<ReadSession>());
-        }
-
-        public ValidateSession CreateValidateSession(ulong collectionId)
-        {
-            return new ValidateSession(
-                collectionId,
-                this,
-                Model,
-                Config,
-                new PostingsReader(this));
+                LoggerFactory.CreateLogger<ReadSession>());
         }
 
         public Stream CreateAsyncReadStream(string fileName, int bufferSize = 4096)
@@ -326,13 +399,19 @@ namespace Sir.Search
 
         public bool CollectionExists(ulong collectionId)
         {
-            return File.Exists(Path.Combine(Dir, collectionId + ".docs"));
+            return File.Exists(Path.Combine(Dir, collectionId + ".vec"));
+        }
+
+        public bool CollectionIsIndexOnly(ulong collectionId)
+        {
+            if (!CollectionExists(collectionId))
+                throw new InvalidOperationException($"{collectionId} dows not exist");
+
+            return !File.Exists(Path.Combine(Dir, collectionId + ".docs"));
         }
 
         public void Dispose()
         {
-            foreach (var file in _mmfs.Values)
-                file.Dispose();
         }
     }
 }

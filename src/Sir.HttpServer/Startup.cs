@@ -33,6 +33,11 @@ namespace Sir.HttpServer
 
             services.AddControllersWithViews().AddRazorRuntimeCompilation();
 
+            services.Configure<IISOptions>(options =>
+            {
+                options.ForwardClientCertificate = false;
+            });
+
             var dataDir = ServiceProvider.GetService<IConfigurationProvider>().Get("data_dir");
 
             if (!Directory.Exists(dataDir))
@@ -41,7 +46,10 @@ namespace Sir.HttpServer
             }
         }
 
-        public void Configure(IApplicationBuilder app, IHostApplicationLifetime applicationLifetime, IWebHostEnvironment env)
+        public void Configure(
+            IApplicationBuilder app, 
+            IHostApplicationLifetime applicationLifetime, 
+            IWebHostEnvironment env)
         {
             app.UseMiddleware<ErrorLoggingMiddleware>();
 
@@ -89,8 +97,15 @@ namespace Sir.HttpServer
             }
             catch (Exception e)
             {
+                var dir = Path.Combine(Directory.GetCurrentDirectory(), "log");
+
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
                 File.AppendAllText(
-                    Path.Combine(Directory.GetCurrentDirectory(), "log", "sir.httpserver.log.txt"), 
+                    Path.Combine(dir, "sir.httpserver.log.txt"), 
                     $"{Environment.NewLine}{DateTime.Now} {e}{Environment.NewLine}");
 
                 throw;
